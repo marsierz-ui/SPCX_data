@@ -48,7 +48,7 @@ load_dotenv()
 
 # Number of past calendar days (besides today) to refresh on each LSEG run,
 # so late corrections and any missed runs are picked up.
-LSEG_BACKFILL_DAYS = int(os.environ.get("LSEG_BACKFILL_DAYS", "2"))
+LSEG_BACKFILL_DAYS = int(os.environ.get("LSEG_BACKFILL_DAYS", "4"))
 LSEG_PAGE_SIZE = 10_000  # max rows per tick-history request
 # Cap on tick-history requests per run so a heavy day (e.g. the IPO) can't
 # push the job past its CI timeout; later runs resume where this one stopped.
