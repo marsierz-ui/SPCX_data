@@ -81,7 +81,16 @@ def open_lseg_session():
         # Rides on the logged-in LSEG Workspace application on this machine.
         print("Opening LSEG desktop session (requires Workspace running).")
         session = ld.session.desktop.Definition(app_key=app_key).get_session()
-    session.open()
+    state = session.open()
+    if state != ld.OpenState.Opened:
+        # lseg-data logs auth errors (e.g. 403 on token refresh) without
+        # raising, so surface the failure explicitly.
+        raise RuntimeError(
+            "LSEG session failed to open — check that the app key is valid "
+            "and, for platform sessions, that LSEG_MACHINE_ID/LSEG_PASSWORD "
+            "are real machine-account credentials (not a personal "
+            "Workspace login)."
+        )
     ld.session.set_default(session)
     return session
 
@@ -227,10 +236,15 @@ def collect_yahoo_bars() -> None:
 def main() -> int:
     if lseg_credentials_present():
         print("LSEG credentials found: collecting tick-level data.")
-        collect_lseg_ticks()
+        try:
+            collect_lseg_ticks()
+            return 0
+        except Exception as exc:
+            print(f"WARNING: LSEG collection failed: {exc}")
+            print("Falling back to Yahoo 1-minute bars so data keeps flowing.")
     else:
-        print("No LSEG credentials: falling back to Yahoo 1-minute bars.")
-        collect_yahoo_bars()
+        print("No LSEG credentials: collecting Yahoo 1-minute bars.")
+    collect_yahoo_bars()
     return 0
 
 
