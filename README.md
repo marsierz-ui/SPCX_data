@@ -13,12 +13,28 @@ ticker **SPCX**.
 
 Bar columns: `timestamp` (America/New_York), `open`, `high`, `low`, `close`, `volume`.
 
+## ⚠️ One-time activation step
+
+GitHub Actions workflows can't be pushed with this repo's automation
+credentials, so the workflow file lives at [`workflows/collect.yml`](workflows/collect.yml)
+and must be moved into place once, manually:
+
+1. In the GitHub web UI, open `workflows/collect.yml` and copy its contents.
+2. Create a new file at **`.github/workflows/collect.yml`** (on the default
+   branch) with that content and commit it.
+
+Yahoo only keeps 1-minute bars for ~7 days, so do this **within a few days of
+the June 12 IPO** to keep first-day trading data from expiring. After saving
+the file you can also trigger an immediate run from the **Actions** tab
+("Collect SPCX data" → "Run workflow").
+
 ## How it works
 
 Yahoo Finance only retains 1-minute bars for the **trailing ~7 days**, so the
 data must be harvested continuously or it is lost forever. A GitHub Actions
-workflow ([`.github/workflows/collect.yml`](.github/workflows/collect.yml))
-runs `collect.py` on a schedule:
+workflow (`.github/workflows/collect.yml`, staged at
+[`workflows/collect.yml`](workflows/collect.yml)) runs `collect.py` on a
+schedule:
 
 - every 15 minutes around US regular trading hours (Mon–Fri),
 - hourly during extended pre/post-market hours,
