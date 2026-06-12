@@ -50,6 +50,9 @@ load_dotenv()
 # so late corrections and any missed runs are picked up.
 LSEG_BACKFILL_DAYS = int(os.environ.get("LSEG_BACKFILL_DAYS", "2"))
 LSEG_PAGE_SIZE = 10_000  # max rows per tick-history request
+# Cap on tick-history requests per run so a heavy day (e.g. the IPO) can't
+# push the job past its CI timeout; later runs resume where this one stopped.
+LSEG_MAX_PAGES_PER_RUN = int(os.environ.get("LSEG_MAX_PAGES_PER_RUN", "40"))
 
 
 def lseg_credentials_present() -> bool:
@@ -95,63 +98,96 @@ def open_lseg_session():
     return session
 
 
-def fetch_ticks_for_day(day) -> pd.DataFrame:
-    """Fetch all ticks for one calendar day, paginating backwards in time."""
+def fetch_ticks_window(window_start, window_end, budget: int):
+    """Fetch ticks in [window_start, window_end), paginating backwards from
+    the end. The API can return short pages mid-stream, so only an empty page
+    (or lack of progress) ends the window. Returns (pages, pages_used)."""
     import lseg.data as ld
 
-    day_start = pd.Timestamp(day, tz=MARKET_TZ)
-    day_end = day_start + timedelta(days=1)
     pages = []
-    cursor = day_end
-    while True:
+    cursor = window_end
+    used = 0
+    while cursor > window_start and used < budget:
         page = ld.get_history(
             universe=RIC,
             interval="tick",
             fields=["TRDPRC_1", "TRDVOL_1", "BID", "ASK"],
-            start=day_start.tz_convert("UTC").tz_localize(None),
+            start=window_start.tz_convert("UTC").tz_localize(None),
             end=cursor.tz_convert("UTC").tz_localize(None),
             count=LSEG_PAGE_SIZE,
         )
+        used += 1
         if page is None or page.empty:
             break
+        page.index = pd.DatetimeIndex(page.index, tz="UTC").tz_convert(MARKET_TZ)
+        page.index.name = "timestamp"
         pages.append(page)
-        if len(page) < LSEG_PAGE_SIZE:
+        earliest = page.index.min()
+        if earliest >= cursor:  # no progress (page of identical timestamps)
             break
         # Page backwards: next request ends where this one began.
-        cursor = pd.Timestamp(page.index.min()).tz_localize("UTC").tz_convert(MARKET_TZ)
-        if cursor <= day_start:
-            break
+        cursor = earliest
+    return pages, used
 
-    if not pages:
-        return pd.DataFrame()
-    ticks = pd.concat(pages)
-    ticks.index = pd.DatetimeIndex(ticks.index, tz="UTC").tz_convert(MARKET_TZ)
-    ticks.index.name = "timestamp"
-    # Pagination windows overlap at the boundary timestamp; identical rows
+
+def fetch_ticks_for_day(day, existing: pd.DataFrame | None, budget: int):
+    """Fetch the ticks still missing for one calendar day and merge them with
+    what is already stored. Fetches the range newer than the stored data
+    first, then continues backfilling the range older than it, so coverage
+    grows across runs even when the page budget cuts a run short.
+    Returns (merged_ticks, pages_used)."""
+    day_start = pd.Timestamp(day, tz=MARKET_TZ)
+    day_end = day_start + timedelta(days=1)
+
+    if existing is None or existing.empty:
+        pages, used = fetch_ticks_window(day_start, day_end, budget)
+        frames = pages
+    else:
+        newer, used_n = fetch_ticks_window(existing.index.max(), day_end, budget)
+        older, used_o = fetch_ticks_window(day_start, existing.index.min(),
+                                           budget - used_n)
+        frames = newer + older + [existing]
+        used = used_n + used_o
+
+    if not frames:
+        return pd.DataFrame(), used
+    ticks = pd.concat(frames)
+    # Fetch windows overlap at their boundary timestamps; identical rows
     # there are duplicates, but distinct trades sharing a timestamp are kept.
     ticks = ticks.reset_index().drop_duplicates().set_index("timestamp")
-    return ticks.sort_index()
+    return ticks.sort_index(), used
+
+
+def read_existing_ticks(path: Path) -> pd.DataFrame | None:
+    if not path.exists():
+        return None
+    existing = pd.read_csv(path, index_col="timestamp", parse_dates=True)
+    existing.index = pd.DatetimeIndex(existing.index).tz_convert(MARKET_TZ)
+    return existing
 
 
 def collect_lseg_ticks() -> None:
     TICKS_DIR.mkdir(parents=True, exist_ok=True)
     session = open_lseg_session()
+    budget = LSEG_MAX_PAGES_PER_RUN
     try:
         today = datetime.now(timezone.utc).astimezone().date()
         for offset in range(LSEG_BACKFILL_DAYS, -1, -1):
+            if budget <= 0:
+                print("Page budget exhausted; the next run will continue.")
+                break
             day = today - timedelta(days=offset)
             path = TICKS_DIR / f"{TICKER}_{day}.csv"
-            # Finalized past days never change; skip if already stored.
-            if offset > 0 and path.exists():
-                continue
-            ticks = fetch_ticks_for_day(day)
+            existing = read_existing_ticks(path)
+            before = 0 if existing is None else len(existing)
+            ticks, used = fetch_ticks_for_day(day, existing, budget)
+            budget -= used
             if ticks.empty:
                 print(f"{day}: no ticks (non-trading day or not yet traded).")
                 continue
-            # Overwrite with the full, freshly fetched day: simplest way to
-            # stay correct when ticks share timestamps.
-            ticks.to_csv(path)
-            print(f"{day}: stored {len(ticks)} ticks.")
+            if len(ticks) > before:
+                ticks.to_csv(path)
+            print(f"{day}: {len(ticks)} ticks stored ({len(ticks) - before} new).")
     finally:
         session.close()
 
