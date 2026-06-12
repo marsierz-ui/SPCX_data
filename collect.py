@@ -36,8 +36,10 @@ LSEG_PAGE_SIZE = 10_000  # max rows per tick-history request
 
 
 def lseg_credentials_present() -> bool:
-    return all(os.environ.get(v) for v in
-               ("LSEG_APP_KEY", "LSEG_MACHINE_ID", "LSEG_PASSWORD"))
+    # App key alone is enough for a desktop session (LSEG Workspace running
+    # and logged in on this machine). Headless runs (GitHub Actions) also
+    # need LSEG_MACHINE_ID and LSEG_PASSWORD for a platform session.
+    return bool(os.environ.get("LSEG_APP_KEY"))
 
 
 # ---------------------------------------------------------------------------
@@ -47,14 +49,21 @@ def lseg_credentials_present() -> bool:
 def open_lseg_session():
     import lseg.data as ld
 
-    session = ld.session.platform.Definition(
-        app_key=os.environ["LSEG_APP_KEY"],
-        grant=ld.session.platform.GrantPassword(
-            username=os.environ["LSEG_MACHINE_ID"],
-            password=os.environ["LSEG_PASSWORD"],
-        ),
-        signon_control=True,
-    ).get_session()
+    app_key = os.environ["LSEG_APP_KEY"]
+    if os.environ.get("LSEG_MACHINE_ID") and os.environ.get("LSEG_PASSWORD"):
+        print("Opening LSEG platform session (machine account).")
+        session = ld.session.platform.Definition(
+            app_key=app_key,
+            grant=ld.session.platform.GrantPassword(
+                username=os.environ["LSEG_MACHINE_ID"],
+                password=os.environ["LSEG_PASSWORD"],
+            ),
+            signon_control=True,
+        ).get_session()
+    else:
+        # Rides on the logged-in LSEG Workspace application on this machine.
+        print("Opening LSEG desktop session (requires Workspace running).")
+        session = ld.session.desktop.Definition(app_key=app_key).get_session()
     session.open()
     ld.session.set_default(session)
     return session

@@ -23,15 +23,28 @@ Bar columns: `timestamp` (America/New_York), `open`, `high`, `low`, `close`, `vo
 
 ## Enabling LSEG tick collection
 
-1. In the repo: **Settings → Secrets and variables → Actions → New repository
-   secret**, add:
-   - `LSEG_APP_KEY` — your LSEG Data Platform app key
-   - `LSEG_MACHINE_ID` — your machine account ID (service account user)
-   - `LSEG_PASSWORD` — its password
-2. That's it — on the next run the collector authenticates against the LSEG
-   platform and pulls full tick history for SPCX (RIC `SPCX.O`), refreshing
-   today plus the previous `LSEG_BACKFILL_DAYS` (default 2) calendar days.
-   Past days already on disk are never refetched.
+Two authentication modes, picked automatically:
+
+**Locally, with LSEG Workspace running and logged in** — only the app key is
+needed; the collector opens a *desktop session* through Workspace:
+
+```bash
+export LSEG_APP_KEY="your-app-key"     # PowerShell: $env:LSEG_APP_KEY="..."
+python collect.py
+```
+
+**Headless (GitHub Actions)** — a desktop session is impossible on a cloud
+runner, so a machine (service) account is required. In the repo:
+**Settings → Secrets and variables → Actions → New repository secret**, add:
+
+- `LSEG_APP_KEY` — your LSEG Data Platform app key
+- `LSEG_MACHINE_ID` — your machine account ID (service account user)
+- `LSEG_PASSWORD` — its password
+
+In either mode the collector pulls full tick history for SPCX (RIC `SPCX.O`),
+refreshing today plus the previous `LSEG_BACKFILL_DAYS` (default 2) calendar
+days. Past days already on disk are never refetched, and missed days can be
+backfilled by running once with a larger `LSEG_BACKFILL_DAYS`.
 
 **Licensing warning:** exchange data agreements generally prohibit
 redistributing raw tick data. Keep this repository **private** if you store
