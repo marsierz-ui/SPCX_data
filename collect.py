@@ -29,6 +29,23 @@ BARS_DIR = REPO_ROOT / "data" / "1min"
 TICKS_DIR = REPO_ROOT / "data" / "ticks"
 SNAPSHOT_FILE = REPO_ROOT / "data" / "snapshots" / f"{TICKER}_quotes.csv"
 
+
+def load_dotenv(path: Path = REPO_ROOT / ".env") -> None:
+    """Load KEY=VALUE lines from a local .env file (gitignored) into the
+    environment, without overriding variables that are already set."""
+    if not path.exists():
+        return
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key, value = key.strip(), value.strip().strip("'\"")
+        os.environ.setdefault(key, value)
+
+
+load_dotenv()
+
 # Number of past calendar days (besides today) to refresh on each LSEG run,
 # so late corrections and any missed runs are picked up.
 LSEG_BACKFILL_DAYS = int(os.environ.get("LSEG_BACKFILL_DAYS", "2"))

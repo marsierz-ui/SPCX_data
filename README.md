@@ -26,12 +26,17 @@ Bar columns: `timestamp` (America/New_York), `open`, `high`, `low`, `close`, `vo
 Two authentication modes, picked automatically:
 
 **Locally, with LSEG Workspace running and logged in** — only the app key is
-needed; the collector opens a *desktop session* through Workspace:
+needed; the collector opens a *desktop session* through Workspace. Put the key
+in a local `.env` file (gitignored, loaded automatically — see
+[`.env.example`](.env.example)):
 
 ```bash
-export LSEG_APP_KEY="your-app-key"     # PowerShell: $env:LSEG_APP_KEY="..."
+cp .env.example .env    # then edit .env and set LSEG_APP_KEY
 python collect.py
 ```
+
+Setting `LSEG_APP_KEY` as an environment variable works too and takes
+precedence over `.env`.
 
 **Headless (GitHub Actions)** — a desktop session is impossible on a cloud
 runner, so a machine (service) account is required. In the repo:
