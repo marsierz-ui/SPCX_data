@@ -34,6 +34,12 @@ jobs:
         run: pip install -r requirements.txt
 
       - name: Collect data
+        env:
+          # Add these in repo Settings → Secrets and variables → Actions.
+          # When unset, the collector falls back to Yahoo 1-minute bars.
+          LSEG_APP_KEY: ${{ secrets.LSEG_APP_KEY }}
+          LSEG_MACHINE_ID: ${{ secrets.LSEG_MACHINE_ID }}
+          LSEG_PASSWORD: ${{ secrets.LSEG_PASSWORD }}
         run: python collect.py
 
       - name: Commit and push if data changed

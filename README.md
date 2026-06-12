@@ -6,12 +6,36 @@ ticker **SPCX**.
 
 ## What gets collected
 
+The collector picks its source automatically:
+
+- **LSEG Data Platform** (preferred, tick-level) — used when LSEG credentials
+  are configured. Every trade and quote, microsecond timestamps.
+- **Yahoo Finance** (fallback, free) — 1-minute OHLCV bars when no LSEG
+  credentials are present.
+
 | Dataset | Path | Granularity | Source |
 |---|---|---|---|
+| Tick data (trades + quotes) | `data/ticks/SPCX_YYYY-MM-DD.csv` (one file per day) | every tick (`TRDPRC_1`, `TRDVOL_1`, `BID`, `ASK`) | LSEG (`lseg-data`, RIC `SPCX.O`) |
 | OHLCV bars | `data/1min/SPCX_YYYY-MM-DD.csv` (one file per trading day) | 1 minute, incl. pre/post-market | Yahoo Finance via `yfinance` |
 | Quote snapshots | `data/snapshots/SPCX_quotes.csv` | one sample per collector run (~15 min) | Yahoo Finance real-time quote |
 
 Bar columns: `timestamp` (America/New_York), `open`, `high`, `low`, `close`, `volume`.
+
+## Enabling LSEG tick collection
+
+1. In the repo: **Settings → Secrets and variables → Actions → New repository
+   secret**, add:
+   - `LSEG_APP_KEY` — your LSEG Data Platform app key
+   - `LSEG_MACHINE_ID` — your machine account ID (service account user)
+   - `LSEG_PASSWORD` — its password
+2. That's it — on the next run the collector authenticates against the LSEG
+   platform and pulls full tick history for SPCX (RIC `SPCX.O`), refreshing
+   today plus the previous `LSEG_BACKFILL_DAYS` (default 2) calendar days.
+   Past days already on disk are never refetched.
+
+**Licensing warning:** exchange data agreements generally prohibit
+redistributing raw tick data. Keep this repository **private** if you store
+LSEG tick data in it, and check your subscription's storage terms.
 
 ## ⚠️ One-time activation step
 
