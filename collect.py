@@ -25,7 +25,7 @@ TICKER = "SPCX"          # Yahoo symbol
 RIC = "SPCX.O"           # LSEG RIC for Nasdaq listing
 MARKET_TZ = "America/New_York"
 REPO_ROOT = Path(__file__).resolve().parent
-BARS_DIR = REPO_ROOT / "data" / "1min"
+BARS_FILE = REPO_ROOT / "data" / "1min" / f"{TICKER}_1min.csv"
 TICKS_DIR = REPO_ROOT / "data" / "ticks"
 SNAPSHOT_FILE = REPO_ROOT / "data" / "snapshots" / f"{TICKER}_quotes.csv"
 
@@ -209,24 +209,24 @@ def fetch_minute_bars(ticker) -> pd.DataFrame:
     return bars
 
 
-def merge_bars_into_daily_files(bars: pd.DataFrame) -> int:
-    """Merge fetched bars into one CSV per trading day. Returns rows added."""
-    BARS_DIR.mkdir(parents=True, exist_ok=True)
-    added = 0
-    for day, day_bars in bars.groupby(bars.index.date):
-        path = BARS_DIR / f"{TICKER}_{day}.csv"
-        if path.exists():
-            existing = pd.read_csv(path, index_col="timestamp", parse_dates=True)
-            existing.index = pd.DatetimeIndex(existing.index).tz_convert(MARKET_TZ)
-            before = len(existing)
-            # keep="last" so freshly fetched bars overwrite earlier partial bars
-            merged = pd.concat([existing, day_bars])
-            merged = merged[~merged.index.duplicated(keep="last")].sort_index()
-            added += len(merged) - before
-        else:
-            merged = day_bars.sort_index()
-            added += len(merged)
-        merged.to_csv(path)
+def merge_bars_into_file(bars: pd.DataFrame) -> int:
+    """Merge fetched bars into one accumulating CSV. Returns rows added.
+
+    1-minute bars are small (~25-60 KB/day), so a single growing file stays
+    well under GitHub's 100 MB/file cap for many years, unlike the tick data."""
+    BARS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    if BARS_FILE.exists():
+        existing = pd.read_csv(BARS_FILE, index_col="timestamp", parse_dates=True)
+        existing.index = pd.DatetimeIndex(existing.index).tz_convert(MARKET_TZ)
+        before = len(existing)
+        # keep="last" so freshly fetched bars overwrite earlier partial bars
+        merged = pd.concat([existing, bars])
+        merged = merged[~merged.index.duplicated(keep="last")].sort_index()
+        added = len(merged) - before
+    else:
+        merged = bars.sort_index()
+        added = len(merged)
+    merged.to_csv(BARS_FILE)
     return added
 
 
@@ -259,7 +259,7 @@ def collect_yahoo_bars() -> None:
         # The next scheduled run will catch up (1m history covers 7 days).
         print(f"WARNING: no 1-minute bars returned for {TICKER}.")
     else:
-        added = merge_bars_into_daily_files(bars)
+        added = merge_bars_into_file(bars)
         first, last = bars.index[0], bars.index[-1]
         print(f"Fetched {len(bars)} bars ({first} .. {last}), {added} new rows stored.")
 
