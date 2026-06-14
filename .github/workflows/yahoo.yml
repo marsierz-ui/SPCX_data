@@ -1,0 +1,58 @@
+name: Collect stock data (Yahoo backup)
+
+# Independent backup of the LSEG tick collector (stock.yml). Runs collect.py
+# WITHOUT LSEG secrets, so it always takes the Yahoo 1-minute-bar path and
+# writes data/1min/ . Runs in parallel with the LSEG job (separate concurrency
+# group, different output paths), so 1-minute bars keep flowing even when the
+# LSEG machine-account session fails. Yahoo only retains 1m bars for ~7 days,
+# so frequent polling matters.
+
+on:
+  schedule:
+    # Every 15 minutes around US trading hours (covers EDT and EST), Mon-Fri.
+    - cron: "*/15 13-22 * * 1-5"
+    # Hourly during extended hours (pre-market from 4:00 ET, after-hours to 20:00 ET).
+    - cron: "0 8-12,23 * * 1-5"
+    # Nightly catch-up after the after-hours session closes (00:15 UTC = 20:15 ET).
+    - cron: "15 0 * * 2-6"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: collect-yahoo
+  cancel-in-progress: false
+
+jobs:
+  collect:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Install dependencies
+        run: pip install yfinance pandas
+
+      # Deliberately NO LSEG_* env vars here -> collect.py uses the Yahoo path.
+      - name: Collect Yahoo 1-minute bars
+        run: python collect.py
+
+      - name: Commit and push if data changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add data/1min/ data/snapshots/
+          if git diff --cached --quiet; then
+            echo "No new data."
+            exit 0
+          fi
+          git commit -m "Update SPCX Yahoo 1min data ($(date -u +'%Y-%m-%d %H:%M UTC'))"
+          # Another run may have pushed meanwhile; rebase before pushing.
+          git pull --rebase origin "${GITHUB_REF_NAME}"
+          git push origin "HEAD:${GITHUB_REF_NAME}"
