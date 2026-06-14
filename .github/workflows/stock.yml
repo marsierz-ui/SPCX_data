@@ -1,4 +1,4 @@
-name: Collect SPCX data
+name: Collect stock data
 
 on:
   schedule:
@@ -15,7 +15,7 @@ permissions:
   contents: write
 
 concurrency:
-  group: collect-spcx
+  group: collect-stock
   cancel-in-progress: false
 
 jobs:
