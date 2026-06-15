@@ -177,7 +177,12 @@ def collect_lseg_ticks() -> None:
                 print("Page budget exhausted; the next run will continue.")
                 break
             day = today - timedelta(days=offset)
-            path = TICKS_DIR / f"{TICKER}_{day}.csv"
+            # .gz: pandas infers gzip from the extension on read and write.
+            # Per-day (not one accumulating file): an ever-growing tick file
+            # would (a) still hit GitHub's 100 MB/file cap in ~weeks and (b)
+            # break git delta compression, since recompressing the whole gz
+            # each commit stores a fresh full copy in history.
+            path = TICKS_DIR / f"{TICKER}_{day}.csv.gz"
             existing = read_existing_ticks(path)
             before = 0 if existing is None else len(existing)
             ticks, used = fetch_ticks_for_day(day, existing, budget)
