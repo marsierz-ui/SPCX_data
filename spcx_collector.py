@@ -59,8 +59,8 @@ def post(payload, retries=5):
                 print(f"[http] 429 rate limited, backing off {wait}s")
                 time.sleep(wait)
                 continue
-            sys.exit(f"[http] {e.code} {e.reason}: "
-                     f"{e.read().decode(errors='replace')}")
+            body = e.read().decode(errors="replace")[:256]
+            sys.exit(f"[http] {e.code} {e.reason}: {body}")
         except urllib.error.URLError as e:
             if attempt < retries - 1:
                 wait = 2 ** attempt
@@ -208,7 +208,10 @@ def main():
     args = ap.parse_args()
 
     global OUTDIR, COIN_CACHE
-    OUTDIR = Path(args.outdir)
+    OUTDIR = Path(args.outdir).resolve()
+    if OUTDIR.is_absolute() and not str(OUTDIR).startswith(str(Path.cwd())):
+        sys.exit(f"[error] --outdir must be under the working directory, "
+                 f"got: {OUTDIR}")
     COIN_CACHE = OUTDIR / ".coin_cache.json"
     OUTDIR.mkdir(parents=True, exist_ok=True)
     coin = resolve_coin(args.symbol, args.coin)
