@@ -14,12 +14,16 @@ Two data sources, picked automatically:
 Runs are idempotent: re-running never loses or duplicates rows.
 """
 
+import logging
 import os
 import sys
+import traceback
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pandas as pd
+
+log = logging.getLogger(__name__)
 
 TICKER = "SPCX"          # Yahoo symbol
 RIC = "SPCX.O"           # LSEG RIC for Nasdaq listing
@@ -71,7 +75,7 @@ def open_lseg_session():
 
     app_key = os.environ["LSEG_APP_KEY"]
     if os.environ.get("LSEG_MACHINE_ID") and os.environ.get("LSEG_PASSWORD"):
-        print("Opening LSEG platform session (machine account).")
+        log.info("Opening LSEG platform session (machine account).")
         session = ld.session.platform.Definition(
             app_key=app_key,
             grant=ld.session.platform.GrantPassword(
@@ -82,7 +86,7 @@ def open_lseg_session():
         ).get_session()
     else:
         # Rides on the logged-in LSEG Workspace application on this machine.
-        print("Opening LSEG desktop session (requires Workspace running).")
+        log.info("Opening LSEG desktop session (requires Workspace running).")
         session = ld.session.desktop.Definition(app_key=app_key).get_session()
     state = session.open()
     if state != ld.OpenState.Opened:
@@ -161,9 +165,14 @@ def fetch_ticks_for_day(day, existing: pd.DataFrame | None, budget: int):
 def read_existing_ticks(path: Path) -> pd.DataFrame | None:
     if not path.exists():
         return None
-    existing = pd.read_csv(path, index_col="timestamp", parse_dates=True)
-    existing.index = pd.DatetimeIndex(existing.index).tz_convert(MARKET_TZ)
-    return existing
+    try:
+        existing = pd.read_csv(path, index_col="timestamp", parse_dates=True)
+        existing.index = pd.DatetimeIndex(existing.index).tz_convert(MARKET_TZ)
+        return existing
+    except Exception:
+        log.warning("Corrupt tick file %s, starting fresh\n%s",
+                    path, traceback.format_exc())
+        return None
 
 
 def collect_lseg_ticks() -> None:
@@ -174,7 +183,7 @@ def collect_lseg_ticks() -> None:
         today = datetime.now(timezone.utc).astimezone().date()
         for offset in range(LSEG_BACKFILL_DAYS, -1, -1):
             if budget <= 0:
-                print("Page budget exhausted; the next run will continue.")
+                log.info("Page budget exhausted; the next run will continue.")
                 break
             day = today - timedelta(days=offset)
             # .gz: pandas infers gzip from the extension on read and write.
@@ -188,11 +197,12 @@ def collect_lseg_ticks() -> None:
             ticks, used = fetch_ticks_for_day(day, existing, budget)
             budget -= used
             if ticks.empty:
-                print(f"{day}: no ticks (non-trading day or not yet traded).")
+                log.info("%s: no ticks (non-trading day or not yet traded).", day)
                 continue
             if len(ticks) > before:
                 ticks.to_csv(path)
-            print(f"{day}: {len(ticks)} ticks stored ({len(ticks) - before} new).")
+            log.info("%s: %d ticks stored (%d new).", day, len(ticks),
+                     len(ticks) - before)
     finally:
         session.close()
 
@@ -221,13 +231,24 @@ def merge_bars_into_file(bars: pd.DataFrame) -> int:
     well under GitHub's 100 MB/file cap for many years, unlike the tick data."""
     BARS_FILE.parent.mkdir(parents=True, exist_ok=True)
     if BARS_FILE.exists():
-        existing = pd.read_csv(BARS_FILE, index_col="timestamp", parse_dates=True)
-        existing.index = pd.DatetimeIndex(existing.index).tz_convert(MARKET_TZ)
-        before = len(existing)
-        # keep="last" so freshly fetched bars overwrite earlier partial bars
-        merged = pd.concat([existing, bars])
-        merged = merged[~merged.index.duplicated(keep="last")].sort_index()
-        added = len(merged) - before
+        try:
+            existing = pd.read_csv(BARS_FILE, index_col="timestamp",
+                                   parse_dates=True)
+            existing.index = pd.DatetimeIndex(existing.index).tz_convert(
+                MARKET_TZ)
+        except Exception:
+            log.warning("Corrupt bars file %s, overwriting\n%s",
+                        BARS_FILE, traceback.format_exc())
+            existing = pd.DataFrame()
+        if not existing.empty:
+            before = len(existing)
+            # keep="last" so freshly fetched bars overwrite earlier partial bars
+            merged = pd.concat([existing, bars])
+            merged = merged[~merged.index.duplicated(keep="last")].sort_index()
+            added = len(merged) - before
+        else:
+            merged = bars.sort_index()
+            added = len(merged)
     else:
         merged = bars.sort_index()
         added = len(merged)
@@ -235,19 +256,29 @@ def merge_bars_into_file(bars: pd.DataFrame) -> int:
     return added
 
 
+def _safe_info_field(info, attr: str):
+    """Read a fast_info attribute, returning None if absent and logging once."""
+    try:
+        return info[attr] if hasattr(type(info), "__getitem__") else getattr(info, attr)
+    except (AttributeError, KeyError):
+        log.warning("fast_info missing expected field %r — API may have changed",
+                    attr)
+        return None
+
+
 def append_quote_snapshot(ticker) -> None:
     """Append one point-in-time quote sample to the snapshot log."""
     info = ticker.fast_info
     row = {
         "fetched_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "last_price": getattr(info, "last_price", None),
-        "day_volume": getattr(info, "last_volume", None),
-        "day_high": getattr(info, "day_high", None),
-        "day_low": getattr(info, "day_low", None),
-        "previous_close": getattr(info, "previous_close", None),
+        "last_price": _safe_info_field(info, "last_price"),
+        "day_volume": _safe_info_field(info, "last_volume"),
+        "day_high": _safe_info_field(info, "day_high"),
+        "day_low": _safe_info_field(info, "day_low"),
+        "previous_close": _safe_info_field(info, "previous_close"),
     }
     if row["last_price"] is None:
-        print("No quote snapshot available, skipping snapshot append.")
+        log.warning("No quote snapshot available, skipping snapshot append.")
         return
     SNAPSHOT_FILE.parent.mkdir(parents=True, exist_ok=True)
     df = pd.DataFrame([row])
@@ -262,30 +293,42 @@ def collect_yahoo_bars() -> None:
     if bars.empty:
         # Not an error: market may not have traded yet, or Yahoo hiccupped.
         # The next scheduled run will catch up (1m history covers 7 days).
-        print(f"WARNING: no 1-minute bars returned for {TICKER}.")
+        log.warning("No 1-minute bars returned for %s.", TICKER)
     else:
         added = merge_bars_into_file(bars)
         first, last = bars.index[0], bars.index[-1]
-        print(f"Fetched {len(bars)} bars ({first} .. {last}), {added} new rows stored.")
+        log.info("Fetched %d bars (%s .. %s), %d new rows stored.",
+                 len(bars), first, last, added)
 
     try:
         append_quote_snapshot(ticker)
-    except Exception as exc:  # snapshot is best-effort; never fail the run for it
-        print(f"WARNING: quote snapshot failed: {exc}")
+    except Exception:
+        log.warning("Quote snapshot failed (best-effort):\n%s",
+                    traceback.format_exc())
 
 
 def main() -> int:
+    logging.basicConfig(
+        format="%(asctime)s %(levelname)s %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+        level=logging.INFO,
+    )
     if lseg_credentials_present():
-        print("LSEG credentials found: collecting tick-level data.")
+        log.info("LSEG credentials found: collecting tick-level data.")
         try:
             collect_lseg_ticks()
             return 0
-        except Exception as exc:
-            print(f"WARNING: LSEG collection failed: {exc}")
-            print("Falling back to Yahoo 1-minute bars so data keeps flowing.")
+        except Exception:
+            log.error("LSEG collection failed, falling back to Yahoo "
+                      "1-minute bars so data keeps flowing:\n%s",
+                      traceback.format_exc())
     else:
-        print("No LSEG credentials: collecting Yahoo 1-minute bars.")
-    collect_yahoo_bars()
+        log.info("No LSEG credentials: collecting Yahoo 1-minute bars.")
+    try:
+        collect_yahoo_bars()
+    except Exception:
+        log.error("Yahoo collection failed:\n%s", traceback.format_exc())
+        return 1
     return 0
 
 
