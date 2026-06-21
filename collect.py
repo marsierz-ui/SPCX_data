@@ -21,6 +21,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from spcx_utils import atomic_write_csv, load_dotenv, merge_deduplicate, read_timestamped_csv
+
 TICKER = "SPCX"          # Yahoo symbol
 RIC = "SPCX.O"           # LSEG RIC for Nasdaq listing
 MARKET_TZ = "America/New_York"
@@ -30,21 +32,7 @@ TICKS_DIR = REPO_ROOT / "data" / "ticks"
 SNAPSHOT_FILE = REPO_ROOT / "data" / "snapshots" / f"{TICKER}_quotes.csv"
 
 
-def load_dotenv(path: Path = REPO_ROOT / ".env") -> None:
-    """Load KEY=VALUE lines from a local .env file (gitignored) into the
-    environment, without overriding variables that are already set."""
-    if not path.exists():
-        return
-    for line in path.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        key, _, value = line.partition("=")
-        key, value = key.strip(), value.strip().strip("'\"")
-        os.environ.setdefault(key, value)
-
-
-load_dotenv()
+load_dotenv(REPO_ROOT / ".env")
 
 # Number of past calendar days (besides today) to refresh on each LSEG run,
 # so late corrections and any missed runs are picked up.
@@ -159,11 +147,7 @@ def fetch_ticks_for_day(day, existing: pd.DataFrame | None, budget: int):
 
 
 def read_existing_ticks(path: Path) -> pd.DataFrame | None:
-    if not path.exists():
-        return None
-    existing = pd.read_csv(path, index_col="timestamp", parse_dates=True)
-    existing.index = pd.DatetimeIndex(existing.index).tz_convert(MARKET_TZ)
-    return existing
+    return read_timestamped_csv(path, ts_column="timestamp", tz=MARKET_TZ)
 
 
 def collect_lseg_ticks() -> None:
@@ -219,19 +203,15 @@ def merge_bars_into_file(bars: pd.DataFrame) -> int:
 
     1-minute bars are small (~25-60 KB/day), so a single growing file stays
     well under GitHub's 100 MB/file cap for many years, unlike the tick data."""
-    BARS_FILE.parent.mkdir(parents=True, exist_ok=True)
-    if BARS_FILE.exists():
-        existing = pd.read_csv(BARS_FILE, index_col="timestamp", parse_dates=True)
-        existing.index = pd.DatetimeIndex(existing.index).tz_convert(MARKET_TZ)
+    existing = read_timestamped_csv(BARS_FILE, ts_column="timestamp", tz=MARKET_TZ)
+    if existing is not None:
         before = len(existing)
-        # keep="last" so freshly fetched bars overwrite earlier partial bars
-        merged = pd.concat([existing, bars])
-        merged = merged[~merged.index.duplicated(keep="last")].sort_index()
+        merged = merge_deduplicate(existing, bars, keep="last")
         added = len(merged) - before
     else:
         merged = bars.sort_index()
         added = len(merged)
-    merged.to_csv(BARS_FILE)
+    atomic_write_csv(merged, BARS_FILE)
     return added
 
 
