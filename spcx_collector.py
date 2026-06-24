@@ -23,14 +23,13 @@ Actions (idempotent). Output: out/perp_<interval>_master.csv
 
 import argparse
 import json
-import os
 import sys
 import time
-import urllib.error
-import urllib.request
 from pathlib import Path
 
 import pandas as pd
+
+from spcx_utils import atomic_write_csv, merge_deduplicate, post_json, read_timestamped_csv
 
 API = "https://api.hyperliquid.xyz/info"
 SYMBOL = "SPCX"
@@ -46,28 +45,7 @@ COIN_CACHE = OUTDIR / ".coin_cache.json"
 
 def post(payload, retries=5):
     """POST with exponential backoff on 429 / transient network errors."""
-    data = json.dumps(payload).encode()
-    for attempt in range(retries):
-        req = urllib.request.Request(
-            API, data=data, headers={"Content-Type": "application/json"})
-        try:
-            with urllib.request.urlopen(req, timeout=30) as r:
-                return json.loads(r.read())
-        except urllib.error.HTTPError as e:
-            if e.code == 429 and attempt < retries - 1:
-                wait = 2 ** attempt
-                print(f"[http] 429 rate limited, backing off {wait}s")
-                time.sleep(wait)
-                continue
-            sys.exit(f"[http] {e.code} {e.reason}: "
-                     f"{e.read().decode(errors='replace')}")
-        except urllib.error.URLError as e:
-            if attempt < retries - 1:
-                wait = 2 ** attempt
-                print(f"[http] network error ({e.reason}), retry in {wait}s")
-                time.sleep(wait)
-                continue
-            sys.exit(f"[http] request failed: {e.reason}")
+    return post_json(API, payload, retries=retries)
 
 
 def interval_ms(interval):
@@ -144,17 +122,14 @@ def candles_to_frame(candles_by_t):
 
 
 def load_master(path):
-    if not path.exists():
+    df = read_timestamped_csv(path, ts_column="ts", tz="UTC", index=False)
+    if df is None:
         return pd.DataFrame(columns=COLUMNS)
-    df = pd.read_csv(path, parse_dates=["ts"])
-    df["ts"] = pd.to_datetime(df["ts"], utc=True)
     return df
 
 
-def atomic_write_csv(df, path):
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    df.to_csv(tmp, index=False)
-    os.replace(tmp, path)
+def write_master(df, path):
+    atomic_write_csv(df, path, index=False)
 
 
 def poll_once(coin, interval, master_path, backfill_days):
@@ -182,13 +157,12 @@ def poll_once(coin, interval, master_path, backfill_days):
         print(f"[poll] no candles returned (master has {len(master)} rows)")
         return len(master)
 
-    stack = new if master.empty else pd.concat([master, new])
-    combined = (stack
-                .drop_duplicates(subset="ts", keep="last")   # keep updated last candle
-                .sort_values("ts")
-                .reset_index(drop=True))
+    if master.empty:
+        combined = new.sort_values("ts").reset_index(drop=True)
+    else:
+        combined = merge_deduplicate(master, new, ts_column="ts", keep="last")
     added = len(combined) - len(master)
-    atomic_write_csv(combined, master_path)
+    write_master(combined, master_path)
     print(f"[poll] +{added} new, {len(combined)} total, "
           f"latest {combined['ts'].iloc[-1]}")
     return len(combined)
