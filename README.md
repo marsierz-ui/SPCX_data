@@ -98,6 +98,44 @@ pip install -r requirements.txt
 python collect.py
 ```
 
+`spcx_hl_api.py` is a one-shot Hyperliquid pull for ad-hoc windows, with
+optional alignment of the perp against a stock CSV (`--stock`).
+`SPCX_import.py` is an earlier per-day stock collector, superseded by
+`collect.py`; both read `LSEG_APP_KEY` from the environment or `.env`.
+
+## Repository size
+
+The tick files are gzipped, so git cannot delta-compress them: every run that
+rewrites a day's file stores a fresh full blob. That grew this repo to ~2.2 GB
+by 2026-08-15 at roughly **107 MB/day**. GitHub's soft limit is 1 GB (already
+passed) and the hard limit is 5 GB, which at that rate arrives around
+2026-09-10.
+
+`archive_ticks.py` offloads the tick archive to a local folder when the limit
+nears:
+
+```bash
+python archive_ticks.py --status                # headroom against the limits
+python archive_ticks.py --archive               # copy + verify to the local folder
+python archive_ticks.py --prune-older-than 14   # untrack what is safely archived
+```
+
+Verification is sha256 plus a full decompress-and-parse of the archived copy,
+and `--prune` refuses to untrack any file it has not verified, so nothing is
+dropped from git until a readable local copy exists.
+
+Note that `--prune` stops the repo growing but does **not** reclaim space:
+deleting a file in a new commit leaves its blob in history, and history is what
+GitHub measures. Reclaiming the already-committed gigabytes needs a rewrite:
+
+```bash
+git filter-repo --path data/ticks --invert-paths
+git push --force origin main
+```
+
+That rewrites every commit SHA and breaks existing clones, so only run it once
+`--archive` reports every file verified.
+
 ## Granularity: what "most granular" means here
 
 1-minute OHLCV is the finest resolution available without a paid market-data
