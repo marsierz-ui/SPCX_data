@@ -30,8 +30,14 @@ jobs:
       - name: Install dependencies
         run: pip install pandas
 
+      # 1m is the finest series; 30m/1h/1d are the recovery tiers behind it,
+      # with 104/208/5000-day windows instead of 3.5 days. One run per
+      # interval, because the collector takes a single --interval.
       - name: Collect perp candles
-        run: python spcx_collector.py --coin xyz:SPCX --interval 1m --outdir data/perp
+        run: |
+          for iv in 1m 30m 1h 1d; do
+            python spcx_collector.py --coin xyz:SPCX --interval "$iv" --outdir data/perp
+          done
 
       - name: Commit and push if data changed
         run: |

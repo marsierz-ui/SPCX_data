@@ -8,14 +8,23 @@ few candles (the most recent candle is still forming and its o/h/l/c/v/n keep
 updating until it closes). Writes are atomic (temp file + os.replace).
 
 Why incremental matters: the candleSnapshot endpoint only serves roughly the
-most recent 5000 candles (~3.5 days at 1m). Anything older is unrecoverable.
+most recent 5000 candles PER INTERVAL. That is ~3.5 days at 1m, ~104 days at
+30m, ~208 days at 1h and ~5000 days at 1d. Anything older is unrecoverable.
 So you must poll regularly and append into your own archive; if you ever go
-longer than ~3.5 days without polling you get a permanent gap.
+longer than the interval's window without polling you get a permanent gap.
+
+Why several intervals: collecting 1m alone means any outage longer than 3.5
+days is a permanent hole. 30m/1h/1d cost almost nothing and give a 104/208/5000
+day recovery window behind the 1m series. This is not hypothetical - the perp
+launched 2026-05-17 22:00 UTC but 1m collection only started 2026-06-11 00:58,
+and those 25 days of pre-IPO price discovery survive only because 1h and 1d
+were backfilled on 2026-10-30, before the 208-day window crossed inception.
 
 MODES
     python spcx_collector.py                 # one-shot: fetch new candles, append, exit
     python spcx_collector.py --loop          # run forever, poll every --poll-sec (default 60)
     python spcx_collector.py --coin xyz:SPCX # skip discovery (also auto-cached after first run)
+    python spcx_collector.py --interval 1h   # one interval per run; see perp.yml for the loop
 
 Designed to be safe to call repeatedly from Windows Task Scheduler or GitHub
 Actions (idempotent). Output: out/perp_<interval>_master.csv
@@ -165,7 +174,8 @@ def poll_once(coin, interval, master_path, backfill_days):
 
     if master.empty:
         # Fresh start: grab the whole window the endpoint will serve.
-        span = min(backfill_days, MAX_CANDLES * ims / 86_400_000)
+        window = MAX_CANDLES * ims / 86_400_000
+        span = min(backfill_days, window) if backfill_days else window
         start_ms = now_ms - int(span * 86_400_000)
         print(f"[poll] cold start, backfilling ~{span:.1f}d")
     else:
@@ -202,8 +212,10 @@ def main():
     ap.add_argument("--coin", default=None, help="exact {dex}:{coin}; skips discovery")
     ap.add_argument("--loop", action="store_true", help="run forever")
     ap.add_argument("--poll-sec", type=float, default=60.0)
-    ap.add_argument("--backfill-days", type=float, default=3.4,
-                    help="cold-start lookback (capped at endpoint window)")
+    ap.add_argument("--backfill-days", type=float, default=None,
+                    help="cold-start lookback in days; default is the full "
+                         "endpoint window for the interval (~3.5d at 1m, "
+                         "~104d at 30m, ~208d at 1h, ~5000d at 1d)")
     ap.add_argument("--outdir", default="out", help="output directory")
     args = ap.parse_args()
 

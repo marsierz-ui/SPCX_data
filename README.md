@@ -18,6 +18,7 @@ The collector picks its source automatically:
 | Tick data (trades + quotes) | `data/ticks/SPCX_YYYY-MM-DD.csv` (one file per day) | every tick (`TRDPRC_1`, `TRDVOL_1`, `BID`, `ASK`) | LSEG (`lseg-data`, RIC `SPCX.O`) |
 | OHLCV bars | `data/1min/SPCX_YYYY-MM-DD.csv` (one file per trading day) | 1 minute, incl. pre/post-market | Yahoo Finance via `yfinance` |
 | Quote snapshots | `data/snapshots/SPCX_quotes.csv` | one sample per collector run (~15 min) | Yahoo Finance real-time quote |
+| Perp candles | `data/perp/perp_<interval>_master.csv` | 1m, 30m, 1h, 1d | Hyperliquid `xyz:SPCX` via `candleSnapshot` |
 
 Bar columns: `timestamp` (America/New_York), `open`, `high`, `low`, `close`, `volume`.
 
@@ -102,6 +103,35 @@ python collect.py
 optional alignment of the perp against a stock CSV (`--stock`).
 `SPCX_import.py` is an earlier per-day stock collector, superseded by
 `collect.py`; both read `LSEG_APP_KEY` from the environment or `.env`.
+
+## The perp series, and the pre-IPO window
+
+`xyz:SPCX` on the trade[XYZ] HIP-3 dex launched **2026-05-17 22:00 UTC at
+$180.00**, 26 days before the Nasdaq IPO, and converted in place to a standard
+externally-priced perp at listing - one continuous series.
+
+1m collection only started 2026-06-11 00:58, so for months the archive held
+none of that pre-IPO price discovery. `candleSnapshot` serves ~5000 candles per
+interval, which at 1h is ~208 days, so the launch was still reachable until
+about **2026-12-11** and no later. It was backfilled 2026-10-30:
+
+| interval | rows | from | pre-IPO candles |
+| --- | --- | --- | --- |
+| 1m | 203,530 | 2026-06-11 00:58 | 0 (window is 3.5 d) |
+| 30m | 5,001 | 2026-07-18 06:30 | 0 (window is 104 d) |
+| 1h | 3,973 | **2026-05-17 22:00** | **602** |
+| 1d | 167 | **2026-05-17 00:00** | **26** |
+
+Over the pre-IPO window the perp opened at $180.00, ran to $230.00 within a
+day, and traded down to $153.33 before the $135 IPO print. The 1h series was
+cross-checked against the existing 1m master over all 3,393 overlapping hours:
+closes match exactly, and volume and trade counts match on every hour except
+the 1m archive's own truncated first hour (2026-06-11 00:00, which holds 2
+minutes), where the 1h candle is the complete one.
+
+The collector's `--backfill-days` used to default to 3.4, which silently capped
+every cold start at 3.4 days whatever the interval - that default is why the
+gap existed. It now defaults to the full window for the interval.
 
 ## Repository size
 
